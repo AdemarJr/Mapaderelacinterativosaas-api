@@ -116,13 +116,13 @@ app.post('/api/auth/login', async (c) => {
   );
 
   if (res.rowCount === 0) {
-    return c.json({ error: 'Invalid login credentials' }, 401);
+    return c.json({ error: 'Usuário não encontrado ou senha incorreta' }, 401);
   }
 
   const row = res.rows[0];
   const valid = await verifyPassword(password, row.password_hash);
   if (!valid) {
-    return c.json({ error: 'Invalid login credentials' }, 401);
+    return c.json({ error: 'Usuário não encontrado ou senha incorreta' }, 401);
   }
 
   const user = { id: row.id, name: row.name, email: row.email, user_type: row.user_type };
