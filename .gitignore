@@ -1,0 +1,16 @@
+# Dependências
+node_modules
+
+# Variáveis de ambiente (NUNCA commitar segredos)
+.env
+.env.*
+!.env.example
+
+# Logs e temporários
+*.log
+npm-debug.log*
+.DS_Store
+
+# Build
+dist
+build
