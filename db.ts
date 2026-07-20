@@ -9,9 +9,20 @@ if (!connectionString) {
   console.warn('⚠️ WARNING: DATABASE_URL environment variable is not set. Database connections will fail.');
 }
 
+// Alguns bancos (ex.: Postgres self-hosted no Easypanel) não têm SSL habilitado.
+// Nesses casos o DATABASE_URL vem com ?sslmode=disable (ou defina DATABASE_SSL=false).
+// Caso contrário, em produção usamos SSL sem verificar o certificado (ex.: Supabase).
+const sslDisabled =
+  /sslmode=disable/i.test(connectionString || '') ||
+  process.env.DATABASE_SSL === 'false';
+
 const pool = new pg.Pool({
   connectionString,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined
+  ssl: sslDisabled
+    ? false
+    : process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: false }
+      : undefined,
 });
 
 export default pool;
