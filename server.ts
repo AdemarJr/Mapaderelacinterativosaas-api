@@ -698,9 +698,9 @@ app.post('/api/projects/:projectId/relationships', async (c) => {
   const id = body.id || `relationship-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO relationships (id, project_id, source_id, target_id, source_type, target_type, type, level, description, strength, image_url, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.source_id, body.target_id, body.source_type, body.target_type, body.type, body.level || '', body.description || '', body.strength || 1, body.image_url || '']
+    `INSERT INTO relationships (id, project_id, source_id, target_id, source_type, target_type, type, level, description, strength, image_url, source, confidence, start_date, end_date, documents, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.source_id, body.target_id, body.source_type, body.target_type, body.type, body.level || '', body.description || '', body.strength || 1, body.image_url || '', body.source || '', body.confidence || '', body.start_date || null, body.end_date || null, JSON.stringify(body.documents ?? [])]
   );
   return c.json(res.rows[0]);
 });
@@ -712,9 +712,9 @@ app.put('/api/projects/:projectId/relationships/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE relationships SET source_id = $1, target_id = $2, source_type = $3, target_type = $4, type = $5, level = $6, description = $7, strength = $8, image_url = $9, updated_at = NOW()
-     WHERE id = $10 AND project_id = $11 RETURNING *`,
-    [body.source_id, body.target_id, body.source_type, body.target_type, body.type, body.level || '', body.description || '', body.strength || 1, body.image_url || '', id, projectId]
+    `UPDATE relationships SET source_id = $1, target_id = $2, source_type = $3, target_type = $4, type = $5, level = $6, description = $7, strength = $8, image_url = $9, source = $10, confidence = $11, start_date = $12, end_date = $13, documents = $14, updated_at = NOW()
+     WHERE id = $15 AND project_id = $16 RETURNING *`,
+    [body.source_id, body.target_id, body.source_type, body.target_type, body.type, body.level || '', body.description || '', body.strength || 1, body.image_url || '', body.source || '', body.confidence || '', body.start_date || null, body.end_date || null, JSON.stringify(body.documents ?? []), id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -829,7 +829,7 @@ app.delete('/api/map-configurations/:id', async (c) => {
 app.post('/api/ai-chat', async (c) => {
   await requireUser(c);
   const body = await c.req.json();
-  const { question, projectData, history = [] } = body;
+  const { question, projectData, history = [], focusEntity } = body;
 
   if (!question) {
     return c.json({ error: 'Question is required' }, 400);
@@ -864,13 +864,25 @@ ${relationships.map((r: any) => {
   }).join('\n')}
 `;
 
+  let focusContext = '';
+  if (focusEntity && focusEntity.name) {
+    const conns = Array.isArray(focusEntity.connections) ? focusEntity.connections : [];
+    focusContext = `
+
+FOCO ATUAL (o usuário selecionou este ator no mapa - priorize-o na análise):
+- ${focusEntity.type || 'Entidade'}: ${focusEntity.name}
+- Total de conexões: ${conns.length}
+CONEXÕES DIRETAS DO ATOR EM FOCO:
+${conns.map((cn: any) => `- ${cn.name} [${cn.type || ''}] via vínculo ${cn.relType || ''}${cn.level ? ` (nível ${cn.level})` : ''}`).join('\n')}`;
+  }
+
   const systemPrompt = `Você é o "Assistente do Mapa de Relacionamento", um especialista em análise de redes e relacionamentos.
 Sua tarefa é responder perguntas do usuário baseando-se estritamente nos dados do projeto fornecidos abaixo.
 Se a informação não estiver nos dados, diga educadamente que não possui essa informação no mapeamento atual.
 Mantenha um tom profissional, analítico e útil. Cite os nomes das entidades envolvidas em suas respostas.
 
 CONTEXTO DO PROJETO:
-${context}`;
+${context}${focusContext}`;
 
   const messagesForAI = [
     { role: 'system', content: systemPrompt },
