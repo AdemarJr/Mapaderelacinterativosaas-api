@@ -11,7 +11,7 @@ if (!connectionString) {
 
 // Alguns bancos (ex.: Postgres self-hosted no Easypanel) não têm SSL habilitado.
 // Nesses casos o DATABASE_URL vem com ?sslmode=disable (ou defina DATABASE_SSL=false).
-// Caso contrário, em produção usamos SSL sem verificar o certificado (ex.: Supabase).
+// Caso contrário, em produção usamos SSL sem verificar o certificado (hosts gerenciados).
 const sslDisabled =
   /sslmode=disable/i.test(connectionString || '') ||
   process.env.DATABASE_SSL === 'false';
