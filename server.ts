@@ -515,9 +515,9 @@ app.post('/api/projects/:projectId/people', async (c) => {
   const id = body.id || `person-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO people (id, project_id, name, role, institution, email, phone, notes, image_url, instagram, facebook, tiktok, linkedin, website, x, y, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0]
+    `INSERT INTO people (id, project_id, name, role, institution, email, phone, notes, image_url, instagram, facebook, tiktok, linkedin, website, x, y, latitude, longitude, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null]
   );
   return c.json(res.rows[0]);
 });
@@ -529,9 +529,9 @@ app.put('/api/projects/:projectId/people/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE people SET name = $1, role = $2, institution = $3, email = $4, phone = $5, notes = $6, image_url = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, x = $13, y = $14, updated_at = NOW()
-     WHERE id = $15 AND project_id = $16 RETURNING *`,
-    [body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, id, projectId]
+    `UPDATE people SET name = $1, role = $2, institution = $3, email = $4, phone = $5, notes = $6, image_url = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, x = $13, y = $14, latitude = $15, longitude = $16, updated_at = NOW()
+     WHERE id = $17 AND project_id = $18 RETURNING *`,
+    [body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -561,9 +561,9 @@ app.post('/api/projects/:projectId/institutions', async (c) => {
   const id = body.id || `institution-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO institutions (id, project_id, name, type, description, contact, address, cnpj, fantasy_name, instagram, facebook, tiktok, linkedin, website, image_url, x, y, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0]
+    `INSERT INTO institutions (id, project_id, name, type, description, contact, address, cnpj, fantasy_name, instagram, facebook, tiktok, linkedin, website, image_url, x, y, latitude, longitude, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null]
   );
   return c.json(res.rows[0]);
 });
@@ -575,9 +575,9 @@ app.put('/api/projects/:projectId/institutions/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE institutions SET name = $1, type = $2, description = $3, contact = $4, address = $5, cnpj = $6, fantasy_name = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, image_url = $13, x = $14, y = $15, updated_at = NOW()
-     WHERE id = $16 AND project_id = $17 RETURNING *`,
-    [body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, id, projectId]
+    `UPDATE institutions SET name = $1, type = $2, description = $3, contact = $4, address = $5, cnpj = $6, fantasy_name = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, image_url = $13, x = $14, y = $15, latitude = $16, longitude = $17, updated_at = NOW()
+     WHERE id = $18 AND project_id = $19 RETURNING *`,
+    [body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -607,9 +607,9 @@ app.post('/api/projects/:projectId/activities', async (c) => {
   const id = body.id || `activity-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO activities (id, project_id, name, description, start_date, end_date, status, location, image_url, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '']
+    `INSERT INTO activities (id, project_id, name, description, start_date, end_date, status, location, image_url, latitude, longitude, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null]
   );
   return c.json(res.rows[0]);
 });
@@ -621,9 +621,9 @@ app.put('/api/projects/:projectId/activities/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE activities SET name = $1, description = $2, start_date = $3, end_date = $4, status = $5, location = $6, image_url = $7, updated_at = NOW()
-     WHERE id = $8 AND project_id = $9 RETURNING *`,
-    [body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', id, projectId]
+    `UPDATE activities SET name = $1, description = $2, start_date = $3, end_date = $4, status = $5, location = $6, image_url = $7, latitude = $8, longitude = $9, updated_at = NOW()
+     WHERE id = $10 AND project_id = $11 RETURNING *`,
+    [body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -824,7 +824,248 @@ app.delete('/api/map-configurations/:id', async (c) => {
   return c.json({ success: true });
 });
 
+
+// ==================== GEOGRAPHIC / TERRITÓRIO ====================
+
+function isValidGeoCoord(lat: any, lng: any): boolean {
+  const la = Number(lat);
+  const lo = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return false;
+  if (la < -90 || la > 90 || lo < -180 || lo > 180) return false;
+  return true;
+}
+
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+app.get('/api/projects/:projectId/geographic/entities', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+
+  const [people, institutions, activities, locations] = await Promise.all([
+    query('SELECT * FROM people WHERE project_id = $1', [projectId]),
+    query('SELECT * FROM institutions WHERE project_id = $1', [projectId]),
+    query('SELECT * FROM activities WHERE project_id = $1', [projectId]),
+    query('SELECT * FROM locations WHERE project_id = $1', [projectId]),
+  ]);
+
+  const mapRow = (type: string, row: any) => ({
+    id: row.id,
+    type,
+    name: row.name,
+    latitude: row.latitude != null ? Number(row.latitude) : null,
+    longitude: row.longitude != null ? Number(row.longitude) : null,
+    address: row.address || row.location || null,
+    meta: row,
+  });
+
+  const entities = [
+    ...people.rows.map((r: any) => mapRow('person', r)),
+    ...institutions.rows.map((r: any) => mapRow('institution', r)),
+    ...activities.rows.map((r: any) => mapRow('activity', r)),
+    ...locations.rows.map((r: any) => mapRow('location', r)),
+  ];
+
+  return c.json({
+    entities,
+    geolocated: entities.filter((e) => isValidGeoCoord(e.latitude, e.longitude)),
+  });
+});
+
+app.get('/api/projects/:projectId/geographic/summary', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+
+  const [people, institutions, activities, locations, relationships] = await Promise.all([
+    query('SELECT id, name, latitude, longitude FROM people WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM institutions WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM activities WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM locations WHERE project_id = $1', [projectId]),
+    query('SELECT * FROM relationships WHERE project_id = $1', [projectId]),
+  ]);
+
+  const classify = (rows: any[]) => {
+    const withGeo = rows.filter((r) => isValidGeoCoord(r.latitude, r.longitude));
+    const without = rows.filter((r) => !isValidGeoCoord(r.latitude, r.longitude));
+    return { total: rows.length, withGeo: withGeo.length, withoutGeo: without.length, missing: without.map((r) => ({ id: r.id, name: r.name })) };
+  };
+
+  const p = classify(people.rows);
+  const i = classify(institutions.rows);
+  const a = classify(activities.rows);
+  const l = classify(locations.rows);
+
+  const geoIds = new Set(
+    [...people.rows, ...institutions.rows, ...activities.rows, ...locations.rows]
+      .filter((r) => isValidGeoCoord(r.latitude, r.longitude))
+      .map((r) => r.id)
+  );
+
+  const relationshipsGeolocated = relationships.rows.filter(
+    (r: any) => geoIds.has(r.source_id) && geoIds.has(r.target_id)
+  ).length;
+
+  return c.json({
+    people: p,
+    institutions: i,
+    activities: a,
+    locations: l,
+    totals: {
+      entities: p.total + i.total + a.total + l.total,
+      geolocated: p.withGeo + i.withGeo + a.withGeo + l.withGeo,
+      missing: p.withoutGeo + i.withoutGeo + a.withoutGeo + l.withoutGeo,
+      relationships: relationships.rows.length,
+      relationshipsGeolocated,
+    },
+  });
+});
+
+app.get('/api/projects/:projectId/geographic/relationships', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+
+  const [rels, people, institutions, activities, locations] = await Promise.all([
+    query('SELECT * FROM relationships WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM people WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM institutions WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM activities WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, latitude, longitude FROM locations WHERE project_id = $1', [projectId]),
+  ]);
+
+  const byId = new Map<string, any>();
+  for (const row of [...people.rows, ...institutions.rows, ...activities.rows, ...locations.rows]) {
+    byId.set(row.id, row);
+  }
+
+  const edges = rels.rows
+    .map((r: any) => {
+      const s = byId.get(r.source_id);
+      const t = byId.get(r.target_id);
+      if (!s || !t) return null;
+      if (!isValidGeoCoord(s.latitude, s.longitude) || !isValidGeoCoord(t.latitude, t.longitude)) return null;
+      return {
+        id: r.id,
+        type: r.type,
+        level: r.level,
+        confidence: r.confidence,
+        source: r.source,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        from: { id: s.id, name: s.name, latitude: Number(s.latitude), longitude: Number(s.longitude) },
+        to: { id: t.id, name: t.name, latitude: Number(t.latitude), longitude: Number(t.longitude) },
+      };
+    })
+    .filter(Boolean);
+
+  return c.json({ relationships: edges });
+});
+
+app.get('/api/projects/:projectId/geographic/nearby', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+
+  const lat = Number(c.req.query('lat'));
+  const lng = Number(c.req.query('lng'));
+  const radiusMeters = Number(c.req.query('radiusMeters') || 5000);
+
+  if (!isValidGeoCoord(lat, lng)) {
+    return c.json({ error: 'lat/lng inválidos' }, 400);
+  }
+  if (!Number.isFinite(radiusMeters) || radiusMeters <= 0 || radiusMeters > 100000) {
+    return c.json({ error: 'radiusMeters inválido' }, 400);
+  }
+
+  const [people, institutions, activities, locations] = await Promise.all([
+    query('SELECT id, name, role, institution, latitude, longitude FROM people WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, type, address, latitude, longitude FROM institutions WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, status, location, latitude, longitude FROM activities WHERE project_id = $1', [projectId]),
+    query('SELECT id, name, address, latitude, longitude FROM locations WHERE project_id = $1', [projectId]),
+  ]);
+
+  const collect = (type: string, rows: any[]) =>
+    rows
+      .filter((r) => isValidGeoCoord(r.latitude, r.longitude))
+      .map((r) => {
+        const distanceMeters = haversineMeters(lat, lng, Number(r.latitude), Number(r.longitude));
+        return { type, id: r.id, name: r.name, latitude: Number(r.latitude), longitude: Number(r.longitude), distanceMeters, meta: r };
+      })
+      .filter((r) => r.distanceMeters <= radiusMeters)
+      .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  const results = [
+    ...collect('person', people.rows),
+    ...collect('institution', institutions.rows),
+    ...collect('activity', activities.rows),
+    ...collect('location', locations.rows),
+  ].sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  return c.json({
+    center: { lat, lng },
+    radiusMeters,
+    count: results.length,
+    results,
+  });
+});
+
+app.patch('/api/projects/:projectId/geographic/:entityType/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  const entityType = c.req.param('entityType');
+  const id = c.req.param('id');
+  const body = await c.req.json();
+
+  const tableByType: Record<string, string> = {
+    person: 'people',
+    people: 'people',
+    institution: 'institutions',
+    institutions: 'institutions',
+    activity: 'activities',
+    activities: 'activities',
+    location: 'locations',
+    locations: 'locations',
+  };
+  const table = tableByType[entityType];
+  if (!table) return c.json({ error: 'entityType inválido' }, 400);
+
+  let latitude = body.latitude;
+  let longitude = body.longitude;
+
+  if (latitude === '' || latitude === undefined) latitude = null;
+  if (longitude === '' || longitude === undefined) longitude = null;
+
+  if (latitude != null || longitude != null) {
+    if (!isValidGeoCoord(latitude, longitude)) {
+      return c.json({ error: 'Coordenadas geográficas inválidas' }, 400);
+    }
+  }
+
+  const res = await query(
+    `UPDATE ${table} SET latitude = $1, longitude = $2, updated_at = NOW() WHERE id = $3 AND project_id = $4 RETURNING *`,
+    [latitude, longitude, id, projectId]
+  );
+  if (!res.rows[0]) return c.json({ error: 'Entidade não encontrada' }, 404);
+  return c.json(res.rows[0]);
+});
+
+
 // ==================== AI CHAT ====================
+
+function cleanEnvValue(value?: string | null): string {
+  if (!value) return '';
+  return String(value)
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\r|\n/g, '')
+    .trim();
+}
 
 app.post('/api/ai-chat', async (c) => {
   await requireUser(c);
@@ -835,13 +1076,17 @@ app.post('/api/ai-chat', async (c) => {
     return c.json({ error: 'Question is required' }, 400);
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = cleanEnvValue(process.env.OPENAI_API_KEY).replace(/\s+/g, '');
+  const orgId = cleanEnvValue(process.env.OPENAI_ORG_ID).replace(/\s+/g, '');
   if (!apiKey) {
     return c.json({ error: 'OpenAI API key not configured on server' }, 500);
   }
 
   const { default: OpenAI } = await import('openai');
-  const openai = new OpenAI({ apiKey });
+  const openai = new OpenAI({
+    apiKey,
+    ...(orgId ? { organization: orgId } : {}),
+  });
 
   const { people = [], institutions = [], activities = [], relationships = [] } = projectData || {};
 
@@ -899,9 +1144,44 @@ ${context}${focusContext}`;
     });
     return c.json({ answer: completion.choices[0].message.content });
   } catch (error: any) {
-    if (error.code === 'insufficient_quota' || (error.message && error.message.includes('quota'))) {
-      return c.json({ error: 'Cota de uso da OpenAI excedida ou plano expirado.', type: 'quota_exceeded' }, 429);
+    console.error('[AI-CHAT] OpenAI error:', {
+      name: error?.name,
+      status: error?.status,
+      code: error?.code,
+      message: error?.message,
+      cause: error?.cause?.message || error?.cause || null,
+      keyLen: apiKey.length,
+      hasOrg: Boolean(orgId),
+    });
+
+    const code = String(error?.code || '');
+    const msg = String(error?.message || '');
+    if (
+      error?.status === 429 ||
+      code === 'insufficient_quota' ||
+      code === 'credit_balance_exhausted' ||
+      /quota|credits? remaining|billing/i.test(msg)
+    ) {
+      return c.json({
+        error: 'Cota de uso da OpenAI excedida ou sem créditos. Adicione créditos em platform.openai.com/settings/organization/billing',
+        type: 'quota_exceeded',
+      }, 429);
     }
+
+    if (error?.status === 401 || error?.code === 'invalid_api_key') {
+      return c.json({
+        error: 'Chave OpenAI inválida ou sem permissão. Verifique OPENAI_API_KEY (e OPENAI_ORG_ID) no ambiente do backend.',
+        type: 'invalid_api_key',
+      }, 401);
+    }
+
+    if (error?.name === 'APIConnectionError' || /connection error/i.test(String(error?.message || ''))) {
+      return c.json({
+        error: 'Falha de conexão do servidor com a OpenAI. Verifique a chave (sem aspas/espaços/quebra de linha) e se o hosting permite saída HTTPS para api.openai.com.',
+        type: 'connection_error',
+      }, 502);
+    }
+
     return c.json({ error: error.message || 'Erro ao processar chat com IA' }, 500);
   }
 });
