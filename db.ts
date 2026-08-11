@@ -32,6 +32,10 @@ export async function query(text: string, params?: any[]) {
   const start = Date.now();
   const res = await pool.query(text, params);
   const duration = Date.now() - start;
-  console.log('⚡ [DB QUERY]', { text, duration: `${duration}ms`, rows: res.rowCount });
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('⚡ [DB QUERY]', { text, duration: `${duration}ms`, rows: res.rowCount });
+  } else {
+    console.log('⚡ [DB QUERY]', { duration: `${duration}ms`, rows: res.rowCount });
+  }
   return res;
 }

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { secureHeaders } from 'hono/secure-headers';
 import { randomUUID } from 'crypto';
 import { query } from './db.js';
 import dotenv from 'dotenv';
@@ -11,6 +12,9 @@ import {
   signToken,
   getAuthenticatedUser,
   canManageUserType,
+  assertStrongPassword,
+  isPlatformAdmin,
+  HttpError,
   type AuthUser,
 } from './auth.js';
 
@@ -19,51 +23,159 @@ dotenv.config();
 const app = new Hono();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+type ProjectRole = 'owner' | 'admin' | 'editor' | 'viewer';
+
+const ROLE_WRITE: ProjectRole[] = ['owner', 'admin', 'editor'];
+const ROLE_DELETE: ProjectRole[] = ['owner', 'admin'];
+const ROLE_MANAGE: ProjectRole[] = ['owner', 'admin'];
+const ROLE_READ: ProjectRole[] = ['owner', 'admin', 'editor', 'viewer'];
+
+// Rate limit in-memory (use Redis in multi-instance production).
+const rateBuckets = new Map<string, { count: number; reset: number }>();
+function rateLimit(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const b = rateBuckets.get(key);
+  if (!b || now > b.reset) {
+    rateBuckets.set(key, { count: 1, reset: now + windowMs });
+    return true;
+  }
+  if (b.count >= limit) return false;
+  b.count += 1;
+  return true;
+}
+
+function clientIp(c: any): string {
+  const xf = c.req.header('x-forwarded-for');
+  if (xf) return xf.split(',')[0].trim();
+  return c.req.header('x-real-ip') || 'unknown';
+}
+
 // Middleware
 app.use('*', logger(console.log));
-app.use('*', cors({
-  origin: '*',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Client-Info'],
-  exposeHeaders: ['Content-Length', 'X-JSON'],
-  maxAge: 86400,
-}));
+app.use(
+  '*',
+  secureHeaders({
+    xFrameOptions: 'DENY',
+    xContentTypeOptions: 'nosniff',
+    referrerPolicy: 'no-referrer',
+  })
+);
+app.use(
+  '*',
+  cors({
+    origin: (origin) => {
+      if (!origin) return ALLOWED_ORIGINS[0];
+      return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+    },
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Client-Info'],
+    exposeHeaders: ['Content-Length', 'X-JSON'],
+    maxAge: 86400,
+  })
+);
 
-app.options('*', (c) => c.text('', 204));
+app.options('*', (c) => c.body(null, 204));
 
 // Global error handler
 app.onError((err, c) => {
   console.error('❌ [SERVER ERROR]', err);
-  const message = err.message || 'Internal server error';
-  const isAuthError = message.includes('authorization') || message.includes('token');
-  return c.json({ error: message, code: isAuthError ? 401 : 500 }, isAuthError ? 401 : 500);
+  const status =
+    err instanceof HttpError
+      ? err.status
+      : typeof (err as any)?.status === 'number'
+        ? (err as any).status
+        : String(err.message || '').toLowerCase().includes('forbidden')
+          ? 403
+          : String(err.message || '').toLowerCase().includes('token') ||
+              String(err.message || '').toLowerCase().includes('authorization')
+            ? 401
+            : 500;
+
+  if (status === 401) return c.json({ error: 'Unauthorized', code: 401 }, 401);
+  if (status === 403) return c.json({ error: 'Forbidden', code: 403 }, 403);
+  if (status === 429) return c.json({ error: err.message || 'Too many requests', code: 429 }, 429);
+  if (status >= 400 && status < 500) {
+    return c.json({ error: err.message || 'Bad request', code: status }, status as any);
+  }
+  return c.json({ error: 'Internal server error', code: 500 }, 500);
 });
 
-// Require an authenticated user or throw (handled by onError as 401).
+/** Authenticated user with fresh user_type from DB (not stale JWT claim). */
 async function requireUser(c: any): Promise<AuthUser> {
-  return getAuthenticatedUser(c.req.header('Authorization'));
+  const tokenUser = await getAuthenticatedUser(c.req.header('Authorization'));
+  const res = await query(
+    'SELECT id, email, name, user_type FROM profiles WHERE id = $1 LIMIT 1',
+    [tokenUser.id]
+  );
+  if ((res.rowCount ?? 0) === 0) {
+    throw new HttpError(401, 'Invalid or expired token');
+  }
+  const row = res.rows[0];
+  return {
+    id: String(row.id),
+    email: row.email,
+    name: row.name,
+    user_type: row.user_type,
+  };
 }
 
-// Checks whether the user can access a given project (owner, collaborator or super_admin).
-async function userCanAccessProject(user: AuthUser, projectId: string): Promise<boolean> {
-  if (user.user_type === 'super_admin') return true;
-  const res = await query(
-    `SELECT 1 FROM projects WHERE id = $1 AND user_id::text = $2
-     UNION
-     SELECT 1 FROM project_users WHERE project_id = $1 AND user_id::text = $2
-     LIMIT 1`,
+function requirePlatformAdmin(user: AuthUser): void {
+  if (!isPlatformAdmin(user.user_type)) {
+    throw new HttpError(403, 'Forbidden');
+  }
+}
+
+async function getProjectRole(user: AuthUser, projectId: string): Promise<ProjectRole | null> {
+  if (user.user_type === 'super_admin') return 'owner';
+  const owner = await query(
+    'SELECT 1 FROM projects WHERE id = $1 AND user_id::text = $2 LIMIT 1',
     [projectId, user.id]
   );
-  return (res.rowCount ?? 0) > 0;
+  if ((owner.rowCount ?? 0) > 0) return 'owner';
+  const link = await query(
+    'SELECT role FROM project_users WHERE project_id = $1 AND user_id::text = $2 LIMIT 1',
+    [projectId, user.id]
+  );
+  if ((link.rowCount ?? 0) === 0) return null;
+  const role = String(link.rows[0].role || 'viewer').toLowerCase();
+  if (role === 'admin' || role === 'editor' || role === 'viewer' || role === 'owner') {
+    return role as ProjectRole;
+  }
+  return 'viewer';
+}
+
+async function assertProjectRole(
+  c: any,
+  projectId: string,
+  allowed: ProjectRole[]
+): Promise<AuthUser> {
+  const user = await requireUser(c);
+  const role = await getProjectRole(user, projectId);
+  if (!role || !allowed.includes(role)) {
+    throw new HttpError(403, 'Forbidden: insufficient project role');
+  }
+  return user;
 }
 
 async function assertProjectAccess(c: any, projectId: string): Promise<AuthUser> {
-  const user = await requireUser(c);
-  const ok = await userCanAccessProject(user, projectId);
-  if (!ok) {
-    throw new Error('Forbidden: no access to this project');
-  }
-  return user;
+  return assertProjectRole(c, projectId, ROLE_READ);
+}
+
+async function assertProjectWrite(c: any, projectId: string): Promise<AuthUser> {
+  return assertProjectRole(c, projectId, ROLE_WRITE);
+}
+
+async function assertProjectDelete(c: any, projectId: string): Promise<AuthUser> {
+  return assertProjectRole(c, projectId, ROLE_DELETE);
+}
+
+async function assertProjectManage(c: any, projectId: string): Promise<AuthUser> {
+  return assertProjectRole(c, projectId, ROLE_MANAGE);
 }
 
 // Health check
@@ -72,14 +184,20 @@ app.get('/api/health', (c) => c.json({ status: 'ok', database: 'postgres' }));
 // ==================== AUTH ====================
 
 app.post('/api/auth/register', async (c) => {
+  const ip = clientIp(c);
+  if (!rateLimit(`register:${ip}`, 5, 15 * 60_000)) {
+    return c.json({ error: 'Muitas tentativas. Tente novamente mais tarde.' }, 429);
+  }
+
   const body = await c.req.json();
   const { name, email, password } = body;
 
   if (!name || !email || !password) {
     return c.json({ error: 'Nome, email e senha são obrigatórios' }, 400);
   }
-  if (password.length < 6) {
-    return c.json({ error: 'A senha deve ter no mínimo 6 caracteres' }, 400);
+  const pwErr = assertStrongPassword(password);
+  if (pwErr) {
+    return c.json({ error: pwErr }, 400);
   }
 
   const existing = await query('SELECT id FROM profiles WHERE lower(email) = lower($1) LIMIT 1', [email]);
@@ -103,6 +221,11 @@ app.post('/api/auth/register', async (c) => {
 });
 
 app.post('/api/auth/login', async (c) => {
+  const ip = clientIp(c);
+  if (!rateLimit(`login:${ip}`, 10, 15 * 60_000)) {
+    return c.json({ error: 'Muitas tentativas. Tente novamente mais tarde.' }, 429);
+  }
+
   const body = await c.req.json();
   const { email, password } = body;
 
@@ -134,7 +257,7 @@ app.get('/api/auth/me', async (c) => {
   const authUser = await requireUser(c);
   const res = await query('SELECT id, name, email, user_type, created_at FROM profiles WHERE id = $1 LIMIT 1', [authUser.id]);
   if (res.rowCount === 0) {
-    return c.json({ id: authUser.id, email: authUser.email, name: authUser.name, user_type: authUser.user_type });
+    throw new HttpError(401, 'Invalid or expired token');
   }
   return c.json(res.rows[0]);
 });
@@ -147,8 +270,9 @@ app.post('/api/auth/change-password', async (c) => {
   if (!current_password || !new_password) {
     return c.json({ error: 'Missing required fields' }, 400);
   }
-  if (new_password.length < 6) {
-    return c.json({ error: 'New password must be at least 6 characters' }, 400);
+  const pwErr = assertStrongPassword(new_password);
+  if (pwErr) {
+    return c.json({ error: pwErr }, 400);
   }
   if (current_password === new_password) {
     return c.json({ error: 'New password must be different from current password' }, 400);
@@ -175,7 +299,7 @@ app.get('/api/profile', async (c) => {
   const authUser = await requireUser(c);
   const res = await query('SELECT id, name, email, user_type, created_at FROM profiles WHERE id = $1 LIMIT 1', [authUser.id]);
   if (res.rowCount === 0) {
-    return c.json({ id: authUser.id, email: authUser.email, name: authUser.name, user_type: authUser.user_type });
+    throw new HttpError(401, 'Invalid or expired token');
   }
   return c.json(res.rows[0]);
 });
@@ -183,11 +307,18 @@ app.get('/api/profile', async (c) => {
 // ==================== USER MANAGEMENT (admin) ====================
 
 app.get('/api/users', async (c) => {
-  await requireUser(c);
+  const user = await requireUser(c);
+  if (!isPlatformAdmin(user.user_type) && user.user_type !== 'manager') {
+    throw new HttpError(403, 'Forbidden');
+  }
   const res = await query(
     'SELECT id, email, name, user_type, created_at, updated_at FROM profiles ORDER BY created_at DESC'
   );
-  return c.json({ profiles: res.rows });
+  const profiles =
+    user.user_type === 'manager'
+      ? res.rows.filter((p: any) => canManageUserType(user.user_type, p.user_type) || p.id === user.id)
+      : res.rows;
+  return c.json({ profiles });
 });
 
 app.post('/api/users', async (c) => {
@@ -200,8 +331,9 @@ app.post('/api/users', async (c) => {
   if (!email || !password || !name) {
     return c.json({ error: 'Nome, email e senha são obrigatórios' }, 400);
   }
-  if (password.length < 6) {
-    return c.json({ error: 'A senha deve ter no mínimo 6 caracteres' }, 400);
+  const pwErr = assertStrongPassword(password);
+  if (pwErr) {
+    return c.json({ error: pwErr }, 400);
   }
   if (!canManageUserType(creatorType, targetType)) {
     return c.json({ error: `Você não tem permissão para criar usuários do tipo "${targetType}".`, code: 403 }, 403);
@@ -229,12 +361,16 @@ app.put('/api/users/:id', async (c) => {
   const body = await c.req.json();
   const { email, name, user_type } = body;
 
-  const targetRes = await query('SELECT id, user_type FROM profiles WHERE id = $1 LIMIT 1', [userId]);
+  const targetRes = await query('SELECT id, user_type, email, name FROM profiles WHERE id = $1 LIMIT 1', [userId]);
   if (targetRes.rowCount === 0) {
     return c.json({ error: 'Usuário não encontrado', code: 404 }, 404);
   }
   const target = targetRes.rows[0];
   const isEditingSelf = requester.id === userId;
+
+  if (!isEditingSelf && !canManageUserType(requester.user_type, target.user_type)) {
+    return c.json({ error: 'Você não tem permissão para editar este usuário.', code: 403 }, 403);
+  }
 
   // Users cannot change their own user_type.
   if (isEditingSelf && user_type && user_type !== target.user_type) {
@@ -246,9 +382,11 @@ app.put('/api/users/:id', async (c) => {
   }
 
   const finalType = isEditingSelf ? target.user_type : (user_type || target.user_type);
+  const finalEmail = email ?? target.email;
+  const finalName = name ?? target.name;
   await query(
     'UPDATE profiles SET email = $1, name = $2, user_type = $3, updated_at = NOW() WHERE id = $4',
-    [email, name, finalType, userId]
+    [finalEmail, finalName, finalType, userId]
   );
   return c.json({ success: true });
 });
@@ -273,9 +411,10 @@ app.delete('/api/users/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// List all users (SuperAdmin password manager view).
+// List all users (admin / super_admin only).
 app.get('/api/auth-users', async (c) => {
-  await requireUser(c);
+  const user = await requireUser(c);
+  requirePlatformAdmin(user);
   const res = await query(
     'SELECT id, email, name, user_type, created_at FROM profiles ORDER BY created_at DESC'
   );
@@ -296,8 +435,9 @@ app.post('/api/users/:id/reset-password', async (c) => {
   const body = await c.req.json();
   const { new_password } = body;
 
-  if (!new_password || new_password.length < 6) {
-    return c.json({ error: 'Password must be at least 6 characters' }, 400);
+  const pwErr = assertStrongPassword(new_password || '');
+  if (pwErr) {
+    return c.json({ error: pwErr }, 400);
   }
 
   const targetRes = await query('SELECT id, email, user_type FROM profiles WHERE id = $1 LIMIT 1', [userId]);
@@ -349,7 +489,7 @@ app.get('/api/projects/:id', async (c) => {
 
 app.put('/api/projects/:id', async (c) => {
   const id = c.req.param('id');
-  await assertProjectAccess(c, id);
+  await assertProjectManage(c, id);
   const body = await c.req.json();
 
   const res = await query(
@@ -433,7 +573,7 @@ app.get('/api/projects/:projectId/users', async (c) => {
 
 app.get('/api/projects/:projectId/available-users', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectManage(c, projectId);
 
   const allProfiles = await query('SELECT id, email, name, user_type FROM profiles ORDER BY name ASC');
   const linked = await query('SELECT user_id FROM project_users WHERE project_id = $1', [projectId]);
@@ -453,7 +593,7 @@ app.get('/api/projects/:projectId/available-users', async (c) => {
 
 app.post('/api/projects/:projectId/users', async (c) => {
   const projectId = c.req.param('projectId');
-  const requester = await assertProjectAccess(c, projectId);
+  const requester = await assertProjectManage(c, projectId);
   const body = await c.req.json();
   const { user_id, role } = body;
 
@@ -479,7 +619,7 @@ app.post('/api/projects/:projectId/users', async (c) => {
 
 app.put('/api/projects/:projectId/users/:linkId', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectManage(c, projectId);
   const linkId = c.req.param('linkId');
   const body = await c.req.json();
 
@@ -493,7 +633,7 @@ app.put('/api/projects/:projectId/users/:linkId', async (c) => {
 
 app.delete('/api/projects/:projectId/users/:linkId', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectManage(c, projectId);
   const linkId = c.req.param('linkId');
   await query('DELETE FROM project_users WHERE id = $1 AND project_id = $2', [linkId, projectId]);
   return c.json({ success: true });
@@ -510,7 +650,7 @@ app.get('/api/projects/:projectId/people', async (c) => {
 
 app.post('/api/projects/:projectId/people', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const body = await c.req.json();
   const id = body.id || `person-${Date.now()}`;
 
@@ -524,7 +664,7 @@ app.post('/api/projects/:projectId/people', async (c) => {
 
 app.put('/api/projects/:projectId/people/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
 
@@ -538,9 +678,9 @@ app.put('/api/projects/:projectId/people/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/people/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
-  await query('DELETE FROM relationships WHERE source_id = $1 OR target_id = $1', [id]);
+  await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM people WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
 });
@@ -556,7 +696,7 @@ app.get('/api/projects/:projectId/institutions', async (c) => {
 
 app.post('/api/projects/:projectId/institutions', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const body = await c.req.json();
   const id = body.id || `institution-${Date.now()}`;
 
@@ -570,7 +710,7 @@ app.post('/api/projects/:projectId/institutions', async (c) => {
 
 app.put('/api/projects/:projectId/institutions/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
 
@@ -584,9 +724,9 @@ app.put('/api/projects/:projectId/institutions/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/institutions/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
-  await query('DELETE FROM relationships WHERE source_id = $1 OR target_id = $1', [id]);
+  await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM institutions WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
 });
@@ -602,7 +742,7 @@ app.get('/api/projects/:projectId/activities', async (c) => {
 
 app.post('/api/projects/:projectId/activities', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const body = await c.req.json();
   const id = body.id || `activity-${Date.now()}`;
 
@@ -616,7 +756,7 @@ app.post('/api/projects/:projectId/activities', async (c) => {
 
 app.put('/api/projects/:projectId/activities/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
 
@@ -630,9 +770,9 @@ app.put('/api/projects/:projectId/activities/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/activities/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
-  await query('DELETE FROM relationships WHERE source_id = $1 OR target_id = $1', [id]);
+  await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM activities WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
 });
@@ -648,7 +788,7 @@ app.get('/api/projects/:projectId/locations', async (c) => {
 
 app.post('/api/projects/:projectId/locations', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const body = await c.req.json();
   const id = body.id || `location-${Date.now()}`;
 
@@ -662,7 +802,7 @@ app.post('/api/projects/:projectId/locations', async (c) => {
 
 app.put('/api/projects/:projectId/locations/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
 
@@ -676,7 +816,7 @@ app.put('/api/projects/:projectId/locations/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/locations/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
   await query('DELETE FROM locations WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
@@ -693,7 +833,7 @@ app.get('/api/projects/:projectId/relationships', async (c) => {
 
 app.post('/api/projects/:projectId/relationships', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const body = await c.req.json();
   const id = body.id || `relationship-${Date.now()}`;
 
@@ -707,7 +847,7 @@ app.post('/api/projects/:projectId/relationships', async (c) => {
 
 app.put('/api/projects/:projectId/relationships/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
 
@@ -721,7 +861,7 @@ app.put('/api/projects/:projectId/relationships/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/relationships/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
   await query('DELETE FROM relationships WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
@@ -730,7 +870,7 @@ app.delete('/api/projects/:projectId/relationships/:id', async (c) => {
 // Fix relationships typed "POSITIVA" -> "POSITIVO".
 app.post('/api/projects/:projectId/relationships/fix-types', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const res = await query(
     `UPDATE relationships SET type = 'POSITIVO', updated_at = NOW()
      WHERE project_id = $1 AND type ILIKE 'POSITIVA' RETURNING id`,
@@ -743,9 +883,9 @@ app.post('/api/projects/:projectId/relationships/fix-types', async (c) => {
 // ==================== MAP CONFIGURATIONS ====================
 
 app.get('/api/map-configurations', async (c) => {
-  const user = await requireUser(c);
   const projectId = c.req.query('projectId');
   if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  const user = await assertProjectAccess(c, projectId);
   const res = await query(
     'SELECT * FROM map_configurations WHERE user_id = $1 AND project_id = $2 ORDER BY updated_at DESC',
     [user.id, projectId]
@@ -754,9 +894,9 @@ app.get('/api/map-configurations', async (c) => {
 });
 
 app.get('/api/map-configurations/default', async (c) => {
-  const user = await requireUser(c);
   const projectId = c.req.query('projectId');
   if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  const user = await assertProjectAccess(c, projectId);
   const res = await query(
     'SELECT * FROM map_configurations WHERE user_id = $1 AND project_id = $2 AND is_default = true LIMIT 1',
     [user.id, projectId]
@@ -765,8 +905,10 @@ app.get('/api/map-configurations/default', async (c) => {
 });
 
 app.post('/api/map-configurations', async (c) => {
-  const user = await requireUser(c);
   const body = await c.req.json();
+  if (!body.project_id && !body.id) {
+    return c.json({ error: 'project_id is required' }, 400);
+  }
 
   const common = {
     template_name: body.template_name,
@@ -779,6 +921,14 @@ app.post('/api/map-configurations', async (c) => {
   };
 
   if (body.id) {
+    const existing = await query(
+      'SELECT project_id FROM map_configurations WHERE id = $1 LIMIT 1',
+      [body.id]
+    );
+    if ((existing.rowCount ?? 0) === 0) {
+      return c.json({ error: 'Configuração não encontrada' }, 404);
+    }
+    const user = await assertProjectWrite(c, existing.rows[0].project_id);
     const res = await query(
       `UPDATE map_configurations SET template_name = $1, is_template = $2, is_default = $3,
         view_state = $4, settings = $5, entity_positions = $6, filter_settings = $7, updated_at = NOW()
@@ -789,6 +939,7 @@ app.post('/api/map-configurations', async (c) => {
     return c.json({ data: res.rows[0] });
   }
 
+  const user = await assertProjectWrite(c, body.project_id);
   const res = await query(
     `INSERT INTO map_configurations (user_id, project_id, template_name, is_template, is_default, view_state, settings, entity_positions, filter_settings, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW()) RETURNING *`,
@@ -798,18 +949,32 @@ app.post('/api/map-configurations', async (c) => {
 });
 
 app.post('/api/map-configurations/set-default', async (c) => {
-  const user = await requireUser(c);
   const body = await c.req.json();
   const { configId, projectId } = body;
+  if (!projectId || !configId) {
+    return c.json({ error: 'configId and projectId are required' }, 400);
+  }
+  const user = await assertProjectWrite(c, projectId);
   await query('UPDATE map_configurations SET is_default = false WHERE user_id = $1 AND project_id = $2', [user.id, projectId]);
-  await query('UPDATE map_configurations SET is_default = true WHERE id = $1 AND user_id = $2', [configId, user.id]);
+  await query('UPDATE map_configurations SET is_default = true WHERE id = $1 AND user_id = $2 AND project_id = $3', [configId, user.id, projectId]);
   return c.json({ success: true });
 });
 
 app.put('/api/map-configurations/:id/positions', async (c) => {
-  const user = await requireUser(c);
   const id = c.req.param('id');
   const body = await c.req.json();
+  const existing = await query(
+    'SELECT project_id, user_id FROM map_configurations WHERE id = $1 LIMIT 1',
+    [id]
+  );
+  if ((existing.rowCount ?? 0) === 0) {
+    return c.json({ error: 'Configuração não encontrada' }, 404);
+  }
+  const user = await assertProjectWrite(c, existing.rows[0].project_id);
+  if (String(existing.rows[0].user_id) !== user.id && user.user_type !== 'super_admin') {
+    // Positions are per-user configs; only owner of the row (or super_admin) may update.
+    return c.json({ error: 'Forbidden' }, 403);
+  }
   await query(
     'UPDATE map_configurations SET entity_positions = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3',
     [JSON.stringify(body.positions ?? []), id, user.id]
@@ -818,8 +983,15 @@ app.put('/api/map-configurations/:id/positions', async (c) => {
 });
 
 app.delete('/api/map-configurations/:id', async (c) => {
-  const user = await requireUser(c);
   const id = c.req.param('id');
+  const existing = await query(
+    'SELECT project_id, user_id FROM map_configurations WHERE id = $1 LIMIT 1',
+    [id]
+  );
+  if ((existing.rowCount ?? 0) === 0) {
+    return c.json({ success: true });
+  }
+  const user = await assertProjectWrite(c, existing.rows[0].project_id);
   await query('DELETE FROM map_configurations WHERE id = $1 AND user_id = $2', [id, user.id]);
   return c.json({ success: true });
 });
@@ -1017,7 +1189,7 @@ app.get('/api/projects/:projectId/geographic/nearby', async (c) => {
 
 app.patch('/api/projects/:projectId/geographic/:entityType/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectAccess(c, projectId);
+  await assertProjectWrite(c, projectId);
   const entityType = c.req.param('entityType');
   const id = c.req.param('id');
   const body = await c.req.json();
@@ -1068,13 +1240,22 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 app.post('/api/ai-chat', async (c) => {
-  await requireUser(c);
-  const body = await c.req.json();
-  const { question, projectData, history = [], focusEntity } = body;
+  const user = await requireUser(c);
+  if (!rateLimit(`ai:${user.id}`, 30, 60_000)) {
+    return c.json({ error: 'Limite de uso da IA atingido. Aguarde um minuto.' }, 429);
+  }
 
-  if (!question) {
+  const body = await c.req.json();
+  const { question, projectId, history = [], focusEntity } = body;
+
+  if (!question || typeof question !== 'string') {
     return c.json({ error: 'Question is required' }, 400);
   }
+  if (!projectId || typeof projectId !== 'string') {
+    return c.json({ error: 'projectId is required' }, 400);
+  }
+
+  await assertProjectAccess(c, projectId);
 
   const apiKey = cleanEnvValue(process.env.OPENAI_API_KEY).replace(/\s+/g, '');
   const orgId = cleanEnvValue(process.env.OPENAI_ORG_ID).replace(/\s+/g, '');
@@ -1082,13 +1263,35 @@ app.post('/api/ai-chat', async (c) => {
     return c.json({ error: 'OpenAI API key not configured on server' }, 500);
   }
 
+  const [peopleRes, institutionsRes, activitiesRes, relationshipsRes] = await Promise.all([
+    query(
+      'SELECT id, name, role, institution FROM people WHERE project_id = $1 ORDER BY name ASC LIMIT 500',
+      [projectId]
+    ),
+    query(
+      'SELECT id, name, type FROM institutions WHERE project_id = $1 ORDER BY name ASC LIMIT 500',
+      [projectId]
+    ),
+    query(
+      'SELECT id, name, description FROM activities WHERE project_id = $1 ORDER BY name ASC LIMIT 500',
+      [projectId]
+    ),
+    query(
+      'SELECT source_id, target_id, type, description FROM relationships WHERE project_id = $1 LIMIT 2000',
+      [projectId]
+    ),
+  ]);
+
+  const people = peopleRes.rows;
+  const institutions = institutionsRes.rows;
+  const activities = activitiesRes.rows;
+  const relationships = relationshipsRes.rows;
+
   const { default: OpenAI } = await import('openai');
   const openai = new OpenAI({
     apiKey,
     ...(orgId ? { organization: orgId } : {}),
   });
-
-  const { people = [], institutions = [], activities = [], relationships = [] } = projectData || {};
 
   const context = `
 DADOS DO PROJETO:
@@ -1110,15 +1313,15 @@ ${relationships.map((r: any) => {
 `;
 
   let focusContext = '';
-  if (focusEntity && focusEntity.name) {
-    const conns = Array.isArray(focusEntity.connections) ? focusEntity.connections : [];
+  if (focusEntity && typeof focusEntity === 'object' && focusEntity.name) {
+    const conns = Array.isArray(focusEntity.connections) ? focusEntity.connections.slice(0, 50) : [];
     focusContext = `
 
 FOCO ATUAL (o usuário selecionou este ator no mapa - priorize-o na análise):
-- ${focusEntity.type || 'Entidade'}: ${focusEntity.name}
+- ${String(focusEntity.type || 'Entidade').slice(0, 80)}: ${String(focusEntity.name).slice(0, 200)}
 - Total de conexões: ${conns.length}
 CONEXÕES DIRETAS DO ATOR EM FOCO:
-${conns.map((cn: any) => `- ${cn.name} [${cn.type || ''}] via vínculo ${cn.relType || ''}${cn.level ? ` (nível ${cn.level})` : ''}`).join('\n')}`;
+${conns.map((cn: any) => `- ${String(cn?.name || '').slice(0, 120)} [${String(cn?.type || '').slice(0, 40)}] via vínculo ${String(cn?.relType || '').slice(0, 40)}${cn?.level ? ` (nível ${String(cn.level).slice(0, 20)})` : ''}`).join('\n')}`;
   }
 
   const systemPrompt = `Você é o "Assistente do Mapa de Relacionamento", um especialista em análise de redes e relacionamentos.
@@ -1129,10 +1332,23 @@ Mantenha um tom profissional, analítico e útil. Cite os nomes das entidades en
 CONTEXTO DO PROJETO:
 ${context}${focusContext}`;
 
+  const safeHistory = (Array.isArray(history) ? history : [])
+    .slice(-6)
+    .filter(
+      (m: any) =>
+        m &&
+        (m.role === 'user' || m.role === 'assistant') &&
+        typeof m.content === 'string'
+    )
+    .map((m: any) => ({
+      role: m.role as 'user' | 'assistant',
+      content: String(m.content).slice(0, 4000),
+    }));
+
   const messagesForAI = [
-    { role: 'system', content: systemPrompt },
-    ...history.slice(-6).map((m: any) => ({ role: m.role, content: m.content })),
-    { role: 'user', content: question },
+    { role: 'system' as const, content: systemPrompt },
+    ...safeHistory,
+    { role: 'user' as const, content: String(question).slice(0, 4000) },
   ];
 
   try {
@@ -1182,7 +1398,7 @@ ${context}${focusContext}`;
       }, 502);
     }
 
-    return c.json({ error: error.message || 'Erro ao processar chat com IA' }, 500);
+    return c.json({ error: 'Falha ao processar a solicitação de IA', type: 'ai_error' }, 500);
   }
 });
 
