@@ -30,6 +30,9 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http
 
 type ProjectRole = 'owner' | 'admin' | 'editor' | 'viewer';
 
+/** Create (POST) — aligned with frontend canCreate (admin/owner only). */
+const ROLE_CREATE: ProjectRole[] = ['owner', 'admin'];
+/** Update (PUT) — editors can edit existing records. */
 const ROLE_WRITE: ProjectRole[] = ['owner', 'admin', 'editor'];
 const ROLE_DELETE: ProjectRole[] = ['owner', 'admin'];
 const ROLE_MANAGE: ProjectRole[] = ['owner', 'admin'];
@@ -166,6 +169,10 @@ async function assertProjectRole(
 
 async function assertProjectAccess(c: any, projectId: string): Promise<AuthUser> {
   return assertProjectRole(c, projectId, ROLE_READ);
+}
+
+async function assertProjectCreate(c: any, projectId: string): Promise<AuthUser> {
+  return assertProjectRole(c, projectId, ROLE_CREATE);
 }
 
 async function assertProjectWrite(c: any, projectId: string): Promise<AuthUser> {
@@ -775,7 +782,7 @@ app.get('/api/projects/:projectId/people', async (c) => {
 
 app.post('/api/projects/:projectId/people', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectWrite(c, projectId);
+  await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `person-${Date.now()}`;
 
@@ -821,7 +828,7 @@ app.get('/api/projects/:projectId/institutions', async (c) => {
 
 app.post('/api/projects/:projectId/institutions', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectWrite(c, projectId);
+  await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `institution-${Date.now()}`;
 
@@ -867,7 +874,7 @@ app.get('/api/projects/:projectId/activities', async (c) => {
 
 app.post('/api/projects/:projectId/activities', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectWrite(c, projectId);
+  await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `activity-${Date.now()}`;
 
@@ -913,7 +920,7 @@ app.get('/api/projects/:projectId/locations', async (c) => {
 
 app.post('/api/projects/:projectId/locations', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectWrite(c, projectId);
+  await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `location-${Date.now()}`;
 
@@ -943,6 +950,7 @@ app.delete('/api/projects/:projectId/locations/:id', async (c) => {
   const projectId = c.req.param('projectId');
   await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
+  await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM locations WHERE id = $1 AND project_id = $2', [id, projectId]);
   return c.json({ success: true });
 });
@@ -958,7 +966,7 @@ app.get('/api/projects/:projectId/relationships', async (c) => {
 
 app.post('/api/projects/:projectId/relationships', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectWrite(c, projectId);
+  await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `relationship-${Date.now()}`;
 
