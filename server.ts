@@ -69,8 +69,10 @@ app.use(
   '*',
   cors({
     origin: (origin) => {
-      if (!origin) return ALLOWED_ORIGINS[0];
-      return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+      // Sem Origin (curl/health): ok com primeira origem permitida
+      if (!origin) return ALLOWED_ORIGINS[0] || '*';
+      // Só ecoa a origem se estiver na allowlist (nunca devolver domínio "errado")
+      return ALLOWED_ORIGINS.includes(origin) ? origin : '';
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Client-Info'],
@@ -639,6 +641,129 @@ app.delete('/api/projects/:projectId/users/:linkId', async (c) => {
   return c.json({ success: true });
 });
 
+
+// ==================== MAP FRONTS (índice dinâmico) ====================
+
+const DEFAULT_MAP_FRONTS = [
+  { slug: 'politicos', label: 'Políticos', short_label: 'Políticos', description: 'Deputados, senadores e atores políticos', color: '#10B981', icon: 'users', sort_order: 1, critical: false },
+  { slug: 'policia', label: 'Polícia / Segurança', short_label: 'Polícia', description: 'Forças de segurança e postos militares', color: '#3B82F6', icon: 'shield', sort_order: 2, critical: false },
+  { slug: 'fazendeiros', label: 'Fazendeiros', short_label: 'Fazendas', description: 'Propriedades e produtores rurais', color: '#F59E0B', icon: 'farm', sort_order: 3, critical: false },
+  { slug: 'eventos', label: 'Eventos / Ações', short_label: 'Eventos', description: 'Atividades, ocorrências e ações', color: '#EF4444', icon: 'alert', sort_order: 4, critical: true },
+  { slug: 'lcp_acampamentos', label: 'LCP / Acampamentos', short_label: 'LCP', description: 'Acampamentos, LCP e movimentos', color: '#84CC16', icon: 'tent', sort_order: 5, critical: false },
+  { slug: 'governo_justica', label: 'Governo / Justiça', short_label: 'Governo', description: 'Órgãos públicos, MPF, tribunais', color: '#8B5CF6', icon: 'building', sort_order: 6, critical: false },
+  { slug: 'outros', label: 'Outros', short_label: 'Outros', description: 'Demais atores do projeto', color: '#64748B', icon: 'more', sort_order: 99, critical: false },
+];
+
+async function ensureDefaultMapFronts(projectId: string) {
+  const existing = await query(
+    'SELECT id FROM map_fronts WHERE project_id = $1 LIMIT 1',
+    [projectId]
+  );
+  if ((existing.rowCount ?? 0) > 0) return;
+
+  for (const f of DEFAULT_MAP_FRONTS) {
+    const id = `front-${projectId}-${f.slug}`;
+    await query(
+      `INSERT INTO map_fronts (id, project_id, slug, label, short_label, description, color, icon, sort_order, critical, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, NOW(), NOW())
+       ON CONFLICT (project_id, slug) DO NOTHING`,
+      [id, projectId, f.slug, f.label, f.short_label, f.description, f.color, f.icon, f.sort_order, f.critical]
+    );
+  }
+}
+
+app.get('/api/projects/:projectId/map-fronts', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  await ensureDefaultMapFronts(projectId);
+  const res = await query(
+    `SELECT * FROM map_fronts WHERE project_id = $1 AND is_active = true ORDER BY sort_order ASC, label ASC`,
+    [projectId]
+  );
+  return c.json(res.rows);
+});
+
+app.post('/api/projects/:projectId/map-fronts', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectManage(c, projectId);
+  const body = await c.req.json();
+  const label = String(body.label || '').trim();
+  if (!label) return c.json({ error: 'label is required' }, 400);
+
+  const slugBase = String(body.slug || label)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 60) || `frente_${Date.now()}`;
+
+  const id = body.id || `front-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const res = await query(
+    `INSERT INTO map_fronts (id, project_id, slug, label, short_label, description, color, icon, sort_order, critical, is_active, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, NOW(), NOW()) RETURNING *`,
+    [
+      id,
+      projectId,
+      slugBase,
+      label,
+      body.short_label || label,
+      body.description || '',
+      body.color || '#64748B',
+      body.icon || 'more',
+      body.sort_order ?? 50,
+      Boolean(body.critical),
+    ]
+  );
+  return c.json(res.rows[0]);
+});
+
+app.put('/api/projects/:projectId/map-fronts/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectManage(c, projectId);
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const res = await query(
+    `UPDATE map_fronts SET
+       label = COALESCE($1, label),
+       short_label = COALESCE($2, short_label),
+       description = COALESCE($3, description),
+       color = COALESCE($4, color),
+       icon = COALESCE($5, icon),
+       sort_order = COALESCE($6, sort_order),
+       critical = COALESCE($7, critical),
+       is_active = COALESCE($8, is_active),
+       updated_at = NOW()
+     WHERE id = $9 AND project_id = $10 RETURNING *`,
+    [
+      body.label ?? null,
+      body.short_label ?? null,
+      body.description ?? null,
+      body.color ?? null,
+      body.icon ?? null,
+      body.sort_order ?? null,
+      typeof body.critical === 'boolean' ? body.critical : null,
+      typeof body.is_active === 'boolean' ? body.is_active : null,
+      id,
+      projectId,
+    ]
+  );
+  if (res.rowCount === 0) return c.json({ error: 'Frente não encontrada' }, 404);
+  return c.json(res.rows[0]);
+});
+
+app.delete('/api/projects/:projectId/map-fronts/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectManage(c, projectId);
+  const id = c.req.param('id');
+  // Soft-delete keeps FK history; ON DELETE SET NULL also handles hard delete.
+  await query(
+    'UPDATE map_fronts SET is_active = false, updated_at = NOW() WHERE id = $1 AND project_id = $2',
+    [id, projectId]
+  );
+  return c.json({ success: true });
+});
+
 // ==================== PEOPLE ====================
 
 app.get('/api/projects/:projectId/people', async (c) => {
@@ -655,9 +780,9 @@ app.post('/api/projects/:projectId/people', async (c) => {
   const id = body.id || `person-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO people (id, project_id, name, role, institution, email, phone, notes, image_url, instagram, facebook, tiktok, linkedin, website, x, y, latitude, longitude, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null]
+    `INSERT INTO people (id, project_id, name, role, institution, email, phone, notes, image_url, instagram, facebook, tiktok, linkedin, website, x, y, latitude, longitude, map_front_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null]
   );
   return c.json(res.rows[0]);
 });
@@ -669,9 +794,9 @@ app.put('/api/projects/:projectId/people/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE people SET name = $1, role = $2, institution = $3, email = $4, phone = $5, notes = $6, image_url = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, x = $13, y = $14, latitude = $15, longitude = $16, updated_at = NOW()
-     WHERE id = $17 AND project_id = $18 RETURNING *`,
-    [body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, id, projectId]
+    `UPDATE people SET name = $1, role = $2, institution = $3, email = $4, phone = $5, notes = $6, image_url = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, x = $13, y = $14, latitude = $15, longitude = $16, map_front_id = $17, updated_at = NOW()
+     WHERE id = $18 AND project_id = $19 RETURNING *`,
+    [body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -701,9 +826,9 @@ app.post('/api/projects/:projectId/institutions', async (c) => {
   const id = body.id || `institution-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO institutions (id, project_id, name, type, description, contact, address, cnpj, fantasy_name, instagram, facebook, tiktok, linkedin, website, image_url, x, y, latitude, longitude, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null]
+    `INSERT INTO institutions (id, project_id, name, type, description, contact, address, cnpj, fantasy_name, instagram, facebook, tiktok, linkedin, website, image_url, x, y, latitude, longitude, map_front_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null]
   );
   return c.json(res.rows[0]);
 });
@@ -715,9 +840,9 @@ app.put('/api/projects/:projectId/institutions/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE institutions SET name = $1, type = $2, description = $3, contact = $4, address = $5, cnpj = $6, fantasy_name = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, image_url = $13, x = $14, y = $15, latitude = $16, longitude = $17, updated_at = NOW()
-     WHERE id = $18 AND project_id = $19 RETURNING *`,
-    [body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, id, projectId]
+    `UPDATE institutions SET name = $1, type = $2, description = $3, contact = $4, address = $5, cnpj = $6, fantasy_name = $7, instagram = $8, facebook = $9, tiktok = $10, linkedin = $11, website = $12, image_url = $13, x = $14, y = $15, latitude = $16, longitude = $17, map_front_id = $18, updated_at = NOW()
+     WHERE id = $19 AND project_id = $20 RETURNING *`,
+    [body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -747,9 +872,9 @@ app.post('/api/projects/:projectId/activities', async (c) => {
   const id = body.id || `activity-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO activities (id, project_id, name, description, start_date, end_date, status, location, image_url, latitude, longitude, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null]
+    `INSERT INTO activities (id, project_id, name, description, start_date, end_date, status, location, image_url, latitude, longitude, map_front_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null, body.map_front_id || null]
   );
   return c.json(res.rows[0]);
 });
@@ -761,9 +886,9 @@ app.put('/api/projects/:projectId/activities/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE activities SET name = $1, description = $2, start_date = $3, end_date = $4, status = $5, location = $6, image_url = $7, latitude = $8, longitude = $9, updated_at = NOW()
-     WHERE id = $10 AND project_id = $11 RETURNING *`,
-    [body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null, id, projectId]
+    `UPDATE activities SET name = $1, description = $2, start_date = $3, end_date = $4, status = $5, location = $6, image_url = $7, latitude = $8, longitude = $9, map_front_id = $10, updated_at = NOW()
+     WHERE id = $11 AND project_id = $12 RETURNING *`,
+    [body.name, body.description || '', body.start_date || null, body.end_date || null, body.status || '', body.location || '', body.image_url || '', body.latitude ?? null, body.longitude ?? null, body.map_front_id || null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -793,9 +918,9 @@ app.post('/api/projects/:projectId/locations', async (c) => {
   const id = body.id || `location-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO locations (id, project_id, name, address, latitude, longitude, google_maps_url, image_url, x, y, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0]
+    `INSERT INTO locations (id, project_id, name, address, latitude, longitude, google_maps_url, image_url, x, y, map_front_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null]
   );
   return c.json(res.rows[0]);
 });
@@ -807,9 +932,9 @@ app.put('/api/projects/:projectId/locations/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE locations SET name = $1, address = $2, latitude = $3, longitude = $4, google_maps_url = $5, image_url = $6, x = $7, y = $8, updated_at = NOW()
-     WHERE id = $9 AND project_id = $10 RETURNING *`,
-    [body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, id, projectId]
+    `UPDATE locations SET name = $1, address = $2, latitude = $3, longitude = $4, google_maps_url = $5, image_url = $6, x = $7, y = $8, map_front_id = $9, updated_at = NOW()
+     WHERE id = $10 AND project_id = $11 RETURNING *`,
+    [body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
