@@ -17,6 +17,8 @@ import {
   HttpError,
   type AuthUser,
 } from './auth.js';
+import { ensurePhaseDSchema } from './schemaPhaseD.js';
+import { writeAuditLog } from './audit.js';
 
 dotenv.config();
 
@@ -259,6 +261,16 @@ app.post('/api/auth/login', async (c) => {
 
   const user = { id: row.id, name: row.name, email: row.email, user_type: row.user_type };
   const token = await signToken(user);
+  await writeAuditLog({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'login',
+    entityType: 'user',
+    entityId: user.id,
+    entityName: user.name,
+    summary: 'Login bem-sucedido',
+    ip: clientIp(c),
+  });
   return c.json({ token, user });
 });
 
@@ -782,7 +794,7 @@ app.get('/api/projects/:projectId/people', async (c) => {
 
 app.post('/api/projects/:projectId/people', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectCreate(c, projectId);
+  const actor = await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `person-${Date.now()}`;
 
@@ -791,6 +803,18 @@ app.post('/api/projects/:projectId/people', async (c) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW()) RETURNING *`,
     [id, projectId, body.name, body.role || '', body.institution || '', body.email || '', body.phone || '', body.notes || '', body.image_url || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null]
   );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'person',
+    entityId: res.rows[0].id,
+    entityName: res.rows[0].name,
+    summary: `Pessoa criada: ${res.rows[0].name}`,
+    afterData: { id: res.rows[0].id, name: res.rows[0].name },
+    ip: clientIp(c),
+  });
   return c.json(res.rows[0]);
 });
 
@@ -810,10 +834,25 @@ app.put('/api/projects/:projectId/people/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/people/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectDelete(c, projectId);
+  const actor = await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
+  const before = await query('SELECT id, name FROM people WHERE id = $1 AND project_id = $2', [id, projectId]);
   await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM people WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'person',
+      entityId: id,
+      entityName: before.rows[0].name,
+      summary: `Pessoa removida: ${before.rows[0].name}`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
   return c.json({ success: true });
 });
 
@@ -828,7 +867,7 @@ app.get('/api/projects/:projectId/institutions', async (c) => {
 
 app.post('/api/projects/:projectId/institutions', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectCreate(c, projectId);
+  const actor = await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `institution-${Date.now()}`;
 
@@ -837,6 +876,18 @@ app.post('/api/projects/:projectId/institutions', async (c) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), NOW()) RETURNING *`,
     [id, projectId, body.name, body.type || '', body.description || '', body.contact || '', body.address || '', body.cnpj || '', body.fantasy_name || '', body.instagram || '', body.facebook || '', body.tiktok || '', body.linkedin || '', body.website || '', body.image_url || '', body.x || 0, body.y || 0, body.latitude ?? null, body.longitude ?? null, body.map_front_id || null]
   );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'institution',
+    entityId: res.rows[0].id,
+    entityName: res.rows[0].name,
+    summary: `Organização criada: ${res.rows[0].name}`,
+    afterData: { id: res.rows[0].id, name: res.rows[0].name },
+    ip: clientIp(c),
+  });
   return c.json(res.rows[0]);
 });
 
@@ -856,10 +907,25 @@ app.put('/api/projects/:projectId/institutions/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/institutions/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectDelete(c, projectId);
+  const actor = await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
+  const before = await query('SELECT id, name FROM institutions WHERE id = $1 AND project_id = $2', [id, projectId]);
   await query('DELETE FROM relationships WHERE project_id = $1 AND (source_id = $2 OR target_id = $2)', [projectId, id]);
   await query('DELETE FROM institutions WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'institution',
+      entityId: id,
+      entityName: before.rows[0].name,
+      summary: `Organização removida: ${before.rows[0].name}`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
   return c.json({ success: true });
 });
 
@@ -966,7 +1032,7 @@ app.get('/api/projects/:projectId/relationships', async (c) => {
 
 app.post('/api/projects/:projectId/relationships', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectCreate(c, projectId);
+  const actor = await assertProjectCreate(c, projectId);
   const body = await c.req.json();
   const id = body.id || `relationship-${Date.now()}`;
 
@@ -975,6 +1041,18 @@ app.post('/api/projects/:projectId/relationships', async (c) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW()) RETURNING *`,
     [id, projectId, body.source_id, body.target_id, body.source_type, body.target_type, body.type, body.level || '', body.description || '', body.strength || 1, body.image_url || '', body.source || '', body.confidence || '', body.start_date || null, body.end_date || null, JSON.stringify(body.documents ?? [])]
   );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'relationship',
+    entityId: res.rows[0].id,
+    entityName: `${body.source_id}→${body.target_id}`,
+    summary: `Vínculo criado (${body.type || 'NEUTRO'})`,
+    afterData: { id: res.rows[0].id, type: body.type, source_id: body.source_id, target_id: body.target_id },
+    ip: clientIp(c),
+  });
   return c.json(res.rows[0]);
 });
 
@@ -994,9 +1072,27 @@ app.put('/api/projects/:projectId/relationships/:id', async (c) => {
 
 app.delete('/api/projects/:projectId/relationships/:id', async (c) => {
   const projectId = c.req.param('projectId');
-  await assertProjectDelete(c, projectId);
+  const actor = await assertProjectDelete(c, projectId);
   const id = c.req.param('id');
+  const before = await query(
+    'SELECT id, source_id, target_id, type FROM relationships WHERE id = $1 AND project_id = $2',
+    [id, projectId]
+  );
   await query('DELETE FROM relationships WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'relationship',
+      entityId: id,
+      entityName: `${before.rows[0].source_id}→${before.rows[0].target_id}`,
+      summary: `Vínculo removido (${before.rows[0].type || ''})`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
   return c.json({ success: true });
 });
 
@@ -1155,11 +1251,12 @@ app.get('/api/projects/:projectId/geographic/entities', async (c) => {
   const projectId = c.req.param('projectId');
   await assertProjectAccess(c, projectId);
 
-  const [people, institutions, activities, locations] = await Promise.all([
+  const [people, institutions, activities, locations, assets] = await Promise.all([
     query('SELECT * FROM people WHERE project_id = $1', [projectId]),
     query('SELECT * FROM institutions WHERE project_id = $1', [projectId]),
     query('SELECT * FROM activities WHERE project_id = $1', [projectId]),
     query('SELECT * FROM locations WHERE project_id = $1', [projectId]),
+    query('SELECT * FROM project_assets WHERE project_id = $1', [projectId]).catch(() => ({ rows: [] as any[] })),
   ]);
 
   const mapRow = (type: string, row: any) => ({
@@ -1177,6 +1274,7 @@ app.get('/api/projects/:projectId/geographic/entities', async (c) => {
     ...institutions.rows.map((r: any) => mapRow('institution', r)),
     ...activities.rows.map((r: any) => mapRow('activity', r)),
     ...locations.rows.map((r: any) => mapRow('location', r)),
+    ...(assets.rows || []).map((r: any) => mapRow('asset', r)),
   ];
 
   return c.json({
@@ -1361,6 +1459,394 @@ app.patch('/api/projects/:projectId/geographic/:entityType/:id', async (c) => {
 });
 
 
+// ==================== FASE D — ASSETS / EVIDENCES / COMMUNICATIONS / AUDIT ====================
+
+app.get('/api/projects/:projectId/assets', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  const res = await query(
+    'SELECT * FROM project_assets WHERE project_id = $1 ORDER BY name ASC',
+    [projectId]
+  );
+  return c.json(res.rows);
+});
+
+app.post('/api/projects/:projectId/assets', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectCreate(c, projectId);
+  const body = await c.req.json();
+  if (!body?.name || typeof body.name !== 'string') {
+    return c.json({ error: 'name is required' }, 400);
+  }
+  const id = body.id || `asset-${Date.now()}`;
+  const res = await query(
+    `INSERT INTO project_assets (
+       id, project_id, name, asset_type, status, description, owner_entity_id, location_id,
+       latitude, longitude, image_url, metadata, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,NOW(),NOW()) RETURNING *`,
+    [
+      id,
+      projectId,
+      body.name.trim(),
+      body.asset_type || 'outro',
+      body.status || 'ativo',
+      body.description || '',
+      body.owner_entity_id || null,
+      body.location_id || null,
+      body.latitude ?? null,
+      body.longitude ?? null,
+      body.image_url || '',
+      JSON.stringify(body.metadata ?? {}),
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'asset',
+    entityId: res.rows[0].id,
+    entityName: res.rows[0].name,
+    summary: `Ativo criado: ${res.rows[0].name}`,
+    afterData: { id: res.rows[0].id, name: res.rows[0].name, asset_type: res.rows[0].asset_type },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.put('/api/projects/:projectId/assets/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectWrite(c, projectId);
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const before = await query('SELECT * FROM project_assets WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (!before.rows[0]) return c.json({ error: 'Ativo não encontrado' }, 404);
+  const res = await query(
+    `UPDATE project_assets SET
+       name = $1, asset_type = $2, status = $3, description = $4, owner_entity_id = $5,
+       location_id = $6, latitude = $7, longitude = $8, image_url = $9, metadata = $10::jsonb,
+       updated_at = NOW()
+     WHERE id = $11 AND project_id = $12 RETURNING *`,
+    [
+      body.name ?? before.rows[0].name,
+      body.asset_type ?? before.rows[0].asset_type,
+      body.status ?? before.rows[0].status,
+      body.description ?? before.rows[0].description,
+      body.owner_entity_id !== undefined ? body.owner_entity_id || null : before.rows[0].owner_entity_id,
+      body.location_id !== undefined ? body.location_id || null : before.rows[0].location_id,
+      body.latitude !== undefined ? body.latitude : before.rows[0].latitude,
+      body.longitude !== undefined ? body.longitude : before.rows[0].longitude,
+      body.image_url ?? before.rows[0].image_url,
+      JSON.stringify(body.metadata ?? before.rows[0].metadata ?? {}),
+      id,
+      projectId,
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'update',
+    entityType: 'asset',
+    entityId: id,
+    entityName: res.rows[0].name,
+    summary: `Ativo atualizado: ${res.rows[0].name}`,
+    beforeData: { id, name: before.rows[0].name },
+    afterData: { id, name: res.rows[0].name, status: res.rows[0].status },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.delete('/api/projects/:projectId/assets/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectDelete(c, projectId);
+  const id = c.req.param('id');
+  const before = await query('SELECT id, name FROM project_assets WHERE id = $1 AND project_id = $2', [id, projectId]);
+  await query('DELETE FROM project_assets WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'asset',
+      entityId: id,
+      entityName: before.rows[0].name,
+      summary: `Ativo removido: ${before.rows[0].name}`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
+  return c.json({ success: true });
+});
+
+app.get('/api/projects/:projectId/evidences', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  const res = await query(
+    'SELECT * FROM project_evidences WHERE project_id = $1 ORDER BY created_at DESC',
+    [projectId]
+  );
+  return c.json(res.rows);
+});
+
+app.post('/api/projects/:projectId/evidences', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectCreate(c, projectId);
+  const body = await c.req.json();
+  if (!body?.title || typeof body.title !== 'string') {
+    return c.json({ error: 'title is required' }, 400);
+  }
+  const id = body.id || `evidence-${Date.now()}`;
+  const res = await query(
+    `INSERT INTO project_evidences (
+       id, project_id, title, evidence_type, url, description, source, confidence,
+       validation_status, occurred_at, author_name, related_entity_id, related_entity_type,
+       relationship_id, location_name, latitude, longitude, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW()) RETURNING *`,
+    [
+      id,
+      projectId,
+      body.title.trim(),
+      body.evidence_type || 'documento',
+      body.url || '',
+      body.description || '',
+      body.source || '',
+      body.confidence || '',
+      body.validation_status || 'pendente',
+      body.occurred_at || null,
+      body.author_name || '',
+      body.related_entity_id || null,
+      body.related_entity_type || null,
+      body.relationship_id || null,
+      body.location_name || '',
+      body.latitude ?? null,
+      body.longitude ?? null,
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'evidence',
+    entityId: res.rows[0].id,
+    entityName: res.rows[0].title,
+    summary: `Evidência criada: ${res.rows[0].title}`,
+    afterData: { id: res.rows[0].id, title: res.rows[0].title },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.put('/api/projects/:projectId/evidences/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectWrite(c, projectId);
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const before = await query('SELECT * FROM project_evidences WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (!before.rows[0]) return c.json({ error: 'Evidência não encontrada' }, 404);
+  const b = before.rows[0];
+  const res = await query(
+    `UPDATE project_evidences SET
+       title = $1, evidence_type = $2, url = $3, description = $4, source = $5, confidence = $6,
+       validation_status = $7, occurred_at = $8, author_name = $9, related_entity_id = $10,
+       related_entity_type = $11, relationship_id = $12, location_name = $13, latitude = $14,
+       longitude = $15, updated_at = NOW()
+     WHERE id = $16 AND project_id = $17 RETURNING *`,
+    [
+      body.title ?? b.title,
+      body.evidence_type ?? b.evidence_type,
+      body.url ?? b.url,
+      body.description ?? b.description,
+      body.source ?? b.source,
+      body.confidence ?? b.confidence,
+      body.validation_status ?? b.validation_status,
+      body.occurred_at !== undefined ? body.occurred_at || null : b.occurred_at,
+      body.author_name ?? b.author_name,
+      body.related_entity_id !== undefined ? body.related_entity_id || null : b.related_entity_id,
+      body.related_entity_type !== undefined ? body.related_entity_type || null : b.related_entity_type,
+      body.relationship_id !== undefined ? body.relationship_id || null : b.relationship_id,
+      body.location_name ?? b.location_name,
+      body.latitude !== undefined ? body.latitude : b.latitude,
+      body.longitude !== undefined ? body.longitude : b.longitude,
+      id,
+      projectId,
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'update',
+    entityType: 'evidence',
+    entityId: id,
+    entityName: res.rows[0].title,
+    summary: `Evidência atualizada: ${res.rows[0].title}`,
+    beforeData: { id, title: b.title, validation_status: b.validation_status },
+    afterData: { id, title: res.rows[0].title, validation_status: res.rows[0].validation_status },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.delete('/api/projects/:projectId/evidences/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectDelete(c, projectId);
+  const id = c.req.param('id');
+  const before = await query('SELECT id, title FROM project_evidences WHERE id = $1 AND project_id = $2', [id, projectId]);
+  await query('DELETE FROM project_evidences WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'evidence',
+      entityId: id,
+      entityName: before.rows[0].title,
+      summary: `Evidência removida: ${before.rows[0].title}`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
+  return c.json({ success: true });
+});
+
+app.get('/api/projects/:projectId/communications', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  const res = await query(
+    'SELECT * FROM project_communications WHERE project_id = $1 ORDER BY COALESCE(occurred_at, created_at) DESC',
+    [projectId]
+  );
+  return c.json(res.rows);
+});
+
+app.post('/api/projects/:projectId/communications', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectCreate(c, projectId);
+  const body = await c.req.json();
+  if (!body?.subject || typeof body.subject !== 'string') {
+    return c.json({ error: 'subject is required' }, 400);
+  }
+  const id = body.id || `comm-${Date.now()}`;
+  const res = await query(
+    `INSERT INTO project_communications (
+       id, project_id, subject, channel, direction, from_entity_id, to_entity_id,
+       occurred_at, summary, evidence_id, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW()) RETURNING *`,
+    [
+      id,
+      projectId,
+      body.subject.trim(),
+      body.channel || 'outro',
+      body.direction || 'internal',
+      body.from_entity_id || null,
+      body.to_entity_id || null,
+      body.occurred_at || null,
+      body.summary || '',
+      body.evidence_id || null,
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'create',
+    entityType: 'communication',
+    entityId: res.rows[0].id,
+    entityName: res.rows[0].subject,
+    summary: `Comunicação registrada: ${res.rows[0].subject}`,
+    afterData: { id: res.rows[0].id, subject: res.rows[0].subject, channel: res.rows[0].channel },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.put('/api/projects/:projectId/communications/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectWrite(c, projectId);
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const before = await query('SELECT * FROM project_communications WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (!before.rows[0]) return c.json({ error: 'Comunicação não encontrada' }, 404);
+  const b = before.rows[0];
+  const res = await query(
+    `UPDATE project_communications SET
+       subject = $1, channel = $2, direction = $3, from_entity_id = $4, to_entity_id = $5,
+       occurred_at = $6, summary = $7, evidence_id = $8, updated_at = NOW()
+     WHERE id = $9 AND project_id = $10 RETURNING *`,
+    [
+      body.subject ?? b.subject,
+      body.channel ?? b.channel,
+      body.direction ?? b.direction,
+      body.from_entity_id !== undefined ? body.from_entity_id || null : b.from_entity_id,
+      body.to_entity_id !== undefined ? body.to_entity_id || null : b.to_entity_id,
+      body.occurred_at !== undefined ? body.occurred_at || null : b.occurred_at,
+      body.summary ?? b.summary,
+      body.evidence_id !== undefined ? body.evidence_id || null : b.evidence_id,
+      id,
+      projectId,
+    ]
+  );
+  await writeAuditLog({
+    projectId,
+    userId: actor.id,
+    userEmail: actor.email,
+    action: 'update',
+    entityType: 'communication',
+    entityId: id,
+    entityName: res.rows[0].subject,
+    summary: `Comunicação atualizada: ${res.rows[0].subject}`,
+    beforeData: { id, subject: b.subject },
+    afterData: { id, subject: res.rows[0].subject },
+    ip: clientIp(c),
+  });
+  return c.json(res.rows[0]);
+});
+
+app.delete('/api/projects/:projectId/communications/:id', async (c) => {
+  const projectId = c.req.param('projectId');
+  const actor = await assertProjectDelete(c, projectId);
+  const id = c.req.param('id');
+  const before = await query(
+    'SELECT id, subject FROM project_communications WHERE id = $1 AND project_id = $2',
+    [id, projectId]
+  );
+  await query('DELETE FROM project_communications WHERE id = $1 AND project_id = $2', [id, projectId]);
+  if (before.rows[0]) {
+    await writeAuditLog({
+      projectId,
+      userId: actor.id,
+      userEmail: actor.email,
+      action: 'delete',
+      entityType: 'communication',
+      entityId: id,
+      entityName: before.rows[0].subject,
+      summary: `Comunicação removida: ${before.rows[0].subject}`,
+      beforeData: before.rows[0],
+      ip: clientIp(c),
+    });
+  }
+  return c.json({ success: true });
+});
+
+app.get('/api/projects/:projectId/audit-logs', async (c) => {
+  const projectId = c.req.param('projectId');
+  await assertProjectAccess(c, projectId);
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '100', 10) || 100, 1), 500);
+  const res = await query(
+    `SELECT * FROM audit_logs
+     WHERE project_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [projectId, limit]
+  );
+  return c.json(res.rows);
+});
+
 // ==================== AI CHAT ====================
 
 function cleanEnvValue(value?: string | null): string {
@@ -1536,5 +2022,14 @@ ${context}${focusContext}`;
 });
 
 // Start Server
-serve({ fetch: app.fetch, port: PORT });
-console.log(`🚀 Independent Hono Backend running on http://localhost:${PORT}`);
+async function boot() {
+  try {
+    await ensurePhaseDSchema();
+  } catch (err) {
+    console.warn('⚠️ [SCHEMA] Fase D não aplicada:', (err as Error)?.message || err);
+  }
+  serve({ fetch: app.fetch, port: PORT });
+  console.log(`🚀 Independent Hono Backend running on http://localhost:${PORT}`);
+}
+
+boot();
