@@ -718,9 +718,16 @@ app.post('/api/projects/:projectId/map-fronts', async (c) => {
     .slice(0, 60) || `frente_${Date.now()}`;
 
   const id = body.id || `front-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const isHub = Boolean(body.is_hub);
+  if (isHub) {
+    await query(
+      'UPDATE map_fronts SET is_hub = false, updated_at = NOW() WHERE project_id = $1 AND is_hub = true',
+      [projectId]
+    );
+  }
   const res = await query(
-    `INSERT INTO map_fronts (id, project_id, slug, label, short_label, description, color, icon, sort_order, critical, is_active, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, NOW(), NOW()) RETURNING *`,
+    `INSERT INTO map_fronts (id, project_id, slug, label, short_label, description, color, icon, sort_order, critical, is_hub, image_url, is_active, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, NOW(), NOW()) RETURNING *`,
     [
       id,
       projectId,
@@ -732,6 +739,8 @@ app.post('/api/projects/:projectId/map-fronts', async (c) => {
       body.icon || 'more',
       body.sort_order ?? 50,
       Boolean(body.critical),
+      isHub,
+      body.image_url ? String(body.image_url).trim() : null,
     ]
   );
   return c.json(res.rows[0]);
@@ -742,6 +751,21 @@ app.put('/api/projects/:projectId/map-fronts/:id', async (c) => {
   await assertProjectManage(c, projectId);
   const id = c.req.param('id');
   const body = await c.req.json();
+
+  if (body.is_hub === true) {
+    await query(
+      'UPDATE map_fronts SET is_hub = false, updated_at = NOW() WHERE project_id = $1 AND id <> $2 AND is_hub = true',
+      [projectId, id]
+    );
+  }
+
+  const imageUrl =
+    body.image_url === undefined
+      ? null
+      : body.image_url
+        ? String(body.image_url).trim()
+        : '';
+
   const res = await query(
     `UPDATE map_fronts SET
        label = COALESCE($1, label),
@@ -752,8 +776,10 @@ app.put('/api/projects/:projectId/map-fronts/:id', async (c) => {
        sort_order = COALESCE($6, sort_order),
        critical = COALESCE($7, critical),
        is_active = COALESCE($8, is_active),
+       is_hub = COALESCE($9, is_hub),
+       image_url = CASE WHEN $10::boolean THEN $11 ELSE image_url END,
        updated_at = NOW()
-     WHERE id = $9 AND project_id = $10 RETURNING *`,
+     WHERE id = $12 AND project_id = $13 RETURNING *`,
     [
       body.label ?? null,
       body.short_label ?? null,
@@ -763,6 +789,9 @@ app.put('/api/projects/:projectId/map-fronts/:id', async (c) => {
       body.sort_order ?? null,
       typeof body.critical === 'boolean' ? body.critical : null,
       typeof body.is_active === 'boolean' ? body.is_active : null,
+      typeof body.is_hub === 'boolean' ? body.is_hub : null,
+      body.image_url !== undefined,
+      imageUrl === '' ? null : imageUrl,
       id,
       projectId,
     ]

@@ -88,5 +88,15 @@ export async function ensurePhaseDSchema(): Promise<void> {
   `);
   await query(`CREATE INDEX IF NOT EXISTS idx_project_communications_project ON project_communications (project_id)`);
 
-  console.log('✅ [SCHEMA] Fase D pronta (audit_logs, assets, evidences, communications)');
+  // Índice central do mapa (frente marcada como hub) + imagem
+  await query(`
+    ALTER TABLE map_fronts
+      ADD COLUMN IF NOT EXISTS is_hub BOOLEAN DEFAULT FALSE
+  `);
+  await query(`
+    ALTER TABLE map_fronts
+      ADD COLUMN IF NOT EXISTS image_url TEXT
+  `);
+
+  console.log('✅ [SCHEMA] Fase D pronta (audit_logs, assets, evidences, communications, map_fronts.is_hub/image_url)');
 }
