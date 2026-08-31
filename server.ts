@@ -18,6 +18,10 @@ import {
   type AuthUser,
 } from './auth.js';
 import { ensurePhaseDSchema } from './schemaPhaseD.js';
+import { ensureMethodologySchema } from './schemaMethodology.js';
+import { ensureTerritorialSchema } from './schemaTerritorial.js';
+import { registerMethodologyRoutes } from './methodologyRoutes.js';
+import { registerEnvironmentalRoutes } from './environmentalRoutes.js';
 import { writeAuditLog } from './audit.js';
 
 dotenv.config();
@@ -1020,9 +1024,9 @@ app.post('/api/projects/:projectId/locations', async (c) => {
   const id = body.id || `location-${Date.now()}`;
 
   const res = await query(
-    `INSERT INTO locations (id, project_id, name, address, latitude, longitude, google_maps_url, image_url, x, y, map_front_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) RETURNING *`,
-    [id, projectId, body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null]
+    `INSERT INTO locations (id, project_id, name, address, latitude, longitude, google_maps_url, image_url, x, y, map_front_id, territory_geojson, territory_radius_km, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, NOW(), NOW()) RETURNING *`,
+    [id, projectId, body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null, body.territory_geojson ? JSON.stringify(body.territory_geojson) : null, body.territory_radius_km ?? null]
   );
   return c.json(res.rows[0]);
 });
@@ -1034,9 +1038,9 @@ app.put('/api/projects/:projectId/locations/:id', async (c) => {
   const body = await c.req.json();
 
   const res = await query(
-    `UPDATE locations SET name = $1, address = $2, latitude = $3, longitude = $4, google_maps_url = $5, image_url = $6, x = $7, y = $8, map_front_id = $9, updated_at = NOW()
-     WHERE id = $10 AND project_id = $11 RETURNING *`,
-    [body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null, id, projectId]
+    `UPDATE locations SET name = $1, address = $2, latitude = $3, longitude = $4, google_maps_url = $5, image_url = $6, x = $7, y = $8, map_front_id = $9, territory_geojson = $10::jsonb, territory_radius_km = $11, updated_at = NOW()
+     WHERE id = $12 AND project_id = $13 RETURNING *`,
+    [body.name, body.address || '', body.latitude || null, body.longitude || null, body.google_maps_url || '', body.image_url || '', body.x || 0, body.y || 0, body.map_front_id || null, body.territory_geojson ? JSON.stringify(body.territory_geojson) : null, body.territory_radius_km ?? null, id, projectId]
   );
   return c.json(res.rows[0]);
 });
@@ -1632,8 +1636,9 @@ app.post('/api/projects/:projectId/evidences', async (c) => {
     `INSERT INTO project_evidences (
        id, project_id, title, evidence_type, url, description, source, confidence,
        validation_status, occurred_at, author_name, related_entity_id, related_entity_type,
-       relationship_id, location_name, latitude, longitude, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW()) RETURNING *`,
+       relationship_id, location_name, latitude, longitude,
+       source_independence, content_hash, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()) RETURNING *`,
     [
       id,
       projectId,
@@ -1652,6 +1657,8 @@ app.post('/api/projects/:projectId/evidences', async (c) => {
       body.location_name || '',
       body.latitude ?? null,
       body.longitude ?? null,
+      body.source_independence || null,
+      body.content_hash || null,
     ]
   );
   await writeAuditLog({
@@ -1682,8 +1689,9 @@ app.put('/api/projects/:projectId/evidences/:id', async (c) => {
        title = $1, evidence_type = $2, url = $3, description = $4, source = $5, confidence = $6,
        validation_status = $7, occurred_at = $8, author_name = $9, related_entity_id = $10,
        related_entity_type = $11, relationship_id = $12, location_name = $13, latitude = $14,
-       longitude = $15, updated_at = NOW()
-     WHERE id = $16 AND project_id = $17 RETURNING *`,
+       longitude = $15,
+       source_independence = $16, content_hash = $17, updated_at = NOW()
+     WHERE id = $18 AND project_id = $19 RETURNING *`,
     [
       body.title ?? b.title,
       body.evidence_type ?? b.evidence_type,
@@ -1700,6 +1708,8 @@ app.put('/api/projects/:projectId/evidences/:id', async (c) => {
       body.location_name ?? b.location_name,
       body.latitude !== undefined ? body.latitude : b.latitude,
       body.longitude !== undefined ? body.longitude : b.longitude,
+      body.source_independence !== undefined ? body.source_independence || null : b.source_independence,
+      body.content_hash !== undefined ? body.content_hash || null : b.content_hash,
       id,
       projectId,
     ]
@@ -2057,6 +2067,32 @@ async function boot() {
   } catch (err) {
     console.warn('⚠️ [SCHEMA] Fase D não aplicada:', (err as Error)?.message || err);
   }
+  try {
+    await ensureMethodologySchema();
+  } catch (err) {
+    console.warn('⚠️ [SCHEMA] Metodologia não aplicada:', (err as Error)?.message || err);
+  }
+  try {
+    await ensureTerritorialSchema();
+  } catch (err) {
+    console.warn('⚠️ [SCHEMA] Territorial não aplicada:', (err as Error)?.message || err);
+  }
+
+  registerMethodologyRoutes(app, {
+    assertProjectAccess,
+    assertProjectWrite,
+    assertProjectCreate,
+    assertProjectManage,
+    clientIp,
+  });
+
+  registerEnvironmentalRoutes(app, {
+    assertProjectAccess,
+    assertProjectWrite,
+    assertProjectManage,
+    clientIp,
+  });
+
   serve({ fetch: app.fetch, port: PORT });
   console.log(`🚀 Independent Hono Backend running on http://localhost:${PORT}`);
 }
